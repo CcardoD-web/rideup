@@ -205,6 +205,34 @@ app.post('/api/financing/apply', authenticateToken, (req: any, res) => {
   res.status(201).json({ id, status, message: status === 'approved' ? 'Financing approved!' : 'Application submitted for review.' });
 });
 
+// Complete purchase with financing
+app.post('/api/financing/:id/complete', authenticateToken, (req: any, res) => {
+  const appId = req.params.id;
+  const application = runSql(`SELECT fa.*, c.price, c.seller_id FROM financing_applications fa JOIN cars c ON fa.car_id = c.id WHERE fa.id = '${appId}' AND fa.buyer_id = '${req.user.id}';`);
+  
+  if (!application || application.length === 0) return res.status(404).json({ error: 'Application not found' });
+  if (application[0].status !== 'approved') return res.status(400).json({ error: 'Application is not approved' });
+
+  const { car_id, buyer_id, seller_id, price } = application[0];
+
+  // Record transaction
+  const txId = uuidv4();
+  const txResult = runSql(`
+    INSERT INTO transactions (id, car_id, buyer_id, seller_id, total_price, payment_method, status)
+    VALUES ('${txId}', '${car_id}', '${buyer_id}', '${seller_id}', ${price}, 'financed', 'completed');
+  `);
+
+  if (!txResult) return res.status(500).json({ error: 'Failed to record transaction' });
+
+  // Mark car as sold
+  runSql(`UPDATE cars SET status = 'sold' WHERE id = '${car_id}';`);
+  
+  // Update application status to mark it as used
+  runSql(`UPDATE financing_applications SET status = 'completed' WHERE id = '${appId}';`);
+
+  res.json({ message: 'Purchase completed with financing!', transaction_id: txId });
+});
+
 app.get('/api/financing/applications', authenticateToken, (req: any, res) => {
   let query = '';
   if (req.user.role === 'buyer') {
@@ -270,6 +298,55 @@ app.get('/api/installments', authenticateToken, (req: any, res) => {
 });
 
 // Payments
+// Alias for payments by plan ID
+app.post('/api/payments/:planId/pay', authenticateToken, (req: any, res) => {
+  const { amount } = req.body;
+  const planId = req.params.planId;
+  const paymentId = uuidv4();
+
+  // Verify plan belongs to user
+  const plan = runSql(`SELECT * FROM installment_plans WHERE id = '${planId}' AND buyer_id = '${req.user.id}';`);
+  if (!plan || plan.length === 0) return res.status(404).json({ error: 'Plan not found' });
+
+  const result = runSql(`INSERT INTO payments (id, plan_id, amount, status) VALUES ('${paymentId}', '${planId}', ${amount}, 'completed');`);
+  if (!result) return res.status(500).json({ error: 'Failed to record payment' });
+
+  runSql(`UPDATE installment_plans SET remaining_balance = remaining_balance - ${amount} WHERE id = '${planId}';`);
+
+  const updated = runSql(`SELECT * FROM installment_plans WHERE id = '${planId}';`);
+  if (updated && updated[0].remaining_balance <= 0) {
+    runSql(`UPDATE installment_plans SET status = 'completed' WHERE id = '${planId}';`);
+    const { car_id, buyer_id, seller_id, total_amount } = updated[0];
+    runSql(`UPDATE cars SET status = 'sold' WHERE id = '${car_id}';`);
+    const txId = uuidv4();
+    runSql(`
+      INSERT INTO transactions (id, car_id, buyer_id, seller_id, total_price, payment_method, status)
+      VALUES ('${txId}', '${car_id}', '${buyer_id}', '${seller_id}', ${total_amount}, 'installment', 'completed');
+    `);
+  }
+
+  res.status(201).json({ id: paymentId, message: 'Payment successful!' });
+});
+
+// Get my payment plans (with next due info)
+app.get('/api/my-payments', authenticateToken, (req: any, res) => {
+  const plans = runSql(`
+    SELECT ip.*, c.make, c.model, c.year, c.image_url
+    FROM installment_plans ip
+    JOIN cars c ON ip.car_id = c.id
+    WHERE ip.buyer_id = '${req.user.id}'
+    ORDER BY ip.created_at DESC
+  `);
+
+  // Enrich with payment counts
+  const enriched = (plans || []).map((plan: any) => {
+    const payments = runSql(`SELECT COUNT(*) as count FROM payments WHERE plan_id = '${plan.id}' AND status = 'completed'`);
+    return { ...plan, payments_made: payments?.[0]?.count || 0 };
+  });
+
+  res.json(enriched);
+});
+
 app.post('/api/payments', authenticateToken, (req: any, res) => {
   const { plan_id, amount } = req.body;
   const id = uuidv4();
@@ -281,14 +358,16 @@ app.post('/api/payments', authenticateToken, (req: any, res) => {
   runSql(`UPDATE installment_plans SET remaining_balance = remaining_balance - ${amount} WHERE id = '${plan_id}';`);
   
   // Check if completed
-  const plan = runSql(`SELECT remaining_balance FROM installment_plans WHERE id = '${plan_id}';`);
+  const plan = runSql(`SELECT * FROM installment_plans WHERE id = '${plan_id}';`);
   if (plan && plan[0].remaining_balance <= 0) {
     runSql(`UPDATE installment_plans SET status = 'completed' WHERE id = '${plan_id}';`);
-    // Find the car_id to mark it as sold
-    const car = runSql(`SELECT car_id FROM installment_plans WHERE id = '${plan_id}';`);
-    if (car) {
-      runSql(`UPDATE cars SET status = 'sold' WHERE id = '${car[0].car_id}';`);
-    }
+    const { car_id, buyer_id, seller_id, total_amount } = plan[0];
+    runSql(`UPDATE cars SET status = 'sold' WHERE id = '${car_id}';`);
+    const txId = uuidv4();
+    runSql(`
+      INSERT INTO transactions (id, car_id, buyer_id, seller_id, total_price, payment_method, status)
+      VALUES ('${txId}', '${car_id}', '${buyer_id}', '${seller_id}', ${total_amount}, 'installment', 'completed');
+    `);
   }
 
   res.status(201).json({ id, message: 'Payment recorded successfully' });
