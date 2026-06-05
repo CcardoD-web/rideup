@@ -15,6 +15,7 @@ interface Car {
   image_url?: string
 }
 
+/*
 interface FinancingApp {
   id: string
   car_id: string
@@ -26,6 +27,7 @@ interface FinancingApp {
   buyer_name?: string
   created_at: string
 }
+*/
 
 interface InstallmentPlan {
   id: string
@@ -128,7 +130,7 @@ export default function Dashboard() {
 
   // Data states
   const [myCars, setMyCars] = useState<Car[]>([])
-  const [apps, setApps] = useState<FinancingApp[]>([])
+  // const [apps, setApps] = useState<FinancingApp[]>([])
   const [plans, setPlans] = useState<InstallmentPlan[]>([])
   const [purchases, setPurchases] = useState<Transaction[]>([])
   const [sales, setSales] = useState<Transaction[]>([])
@@ -150,15 +152,15 @@ export default function Dashboard() {
 
     try {
       // Common fetches
-      const [carsRes, appsRes, plansRes, txRes] = await Promise.all([
+      const [carsRes, plansRes, txRes] = await Promise.all([
         fetch(`${API}/my-listings`, { headers }),
-        fetch(`${API}/financing/applications`, { headers }),
+        // fetch(`${API}/financing/applications`, { headers }),
         fetch(`${API}/installments`, { headers }),
         fetch(`${API}/dashboard/transactions`, { headers }),
       ])
 
       if (carsRes.ok) setMyCars(await carsRes.json())
-      if (appsRes.ok) setApps(await appsRes.json())
+      // if (appsRes.ok) setApps(await appsRes.json())
       if (plansRes.ok) setPlans(await plansRes.json())
       if (txRes.ok) setTransactions(await txRes.json())
 
@@ -192,6 +194,7 @@ export default function Dashboard() {
   useEffect(() => { fetchData() }, [])
 
   // ---- Actions ----
+  /*
   const [selectedPlanPayments, setSelectedPlanPayments] = useState<any[]>([])
   const [showPaymentsModal, setShowPaymentsModal] = useState(false)
 
@@ -206,6 +209,7 @@ export default function Dashboard() {
       console.error(err)
     }
   }
+  */
 
   const handleApprovePlan = async (id: string) => {
     const res = await fetch(`${API}/installments/${id}/approve`, {
@@ -519,7 +523,7 @@ export default function Dashboard() {
 
   // ==================== SELLER DASHBOARD ====================
   const totalEarnings = earnings?.total_earnings || 0
-  const totalSales = earnings?.total_sales || 0
+  // const totalSales = earnings?.total_sales || 0
   const pendingAmount = earnings?.pending_earnings || 0
   const activeInstallmentCount = earnings?.active_installment_plans || 0
 
