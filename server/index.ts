@@ -299,6 +299,160 @@ app.get('/api/installments/:id/payments', authenticateToken, (req: any, res) => 
   res.json(payments || []);
 });
 
+// Transactions (Direct Sales)
+app.post('/api/transactions', authenticateToken, (req: any, res) => {
+  const { car_id, payment_method } = req.body;
+  const buyer_id = req.user.id;
+  const id = uuidv4();
+
+  const carResult = runSql(`SELECT price, seller_id, status FROM cars WHERE id = '${car_id}';`);
+  if (!carResult || carResult.length === 0) return res.status(404).json({ error: 'Car not found' });
+  if (carResult[0].status !== 'available') return res.status(400).json({ error: 'Car is no longer available' });
+
+  const { price, seller_id } = carResult[0];
+
+  const result = runSql(`
+    INSERT INTO transactions (id, car_id, buyer_id, seller_id, total_price, payment_method, status)
+    VALUES ('${id}', '${car_id}', '${buyer_id}', '${seller_id}', ${price}, '${payment_method}', 'completed');
+  `);
+
+  if (!result) {
+    return res.status(500).json({ error: 'Failed to record transaction' });
+  }
+
+  // Mark car as sold
+  runSql(`UPDATE cars SET status = 'sold' WHERE id = '${car_id}';`);
+
+  res.status(201).json({ id, message: 'Purchase successful!' });
+});
+
+app.get('/api/transactions', authenticateToken, (req: any, res) => {
+  let query = '';
+  if (req.user.role === 'buyer') {
+    query = `SELECT t.*, c.make, c.model, c.year FROM transactions t JOIN cars c ON t.car_id = c.id WHERE t.buyer_id = '${req.user.id}' ORDER BY t.created_at DESC;`;
+  } else {
+    query = `SELECT t.*, c.make, c.model, c.year FROM transactions t JOIN cars c ON t.car_id = c.id WHERE t.seller_id = '${req.user.id}' ORDER BY t.created_at DESC;`;
+  }
+  const transactions = runSql(query);
+  res.json(transactions || []);
+});
+
+// ====== DASHBOARD SPECIFIC ENDPOINTS ======
+
+// Buyer purchases endpoint (enriched with car/seller details)
+app.get('/api/dashboard/purchases', authenticateToken, (req: any, res) => {
+  const query = `
+    SELECT t.*, c.make, c.model, c.year, c.image_url, u.name as seller_name
+    FROM transactions t
+    JOIN cars c ON t.car_id = c.id
+    JOIN users u ON t.seller_id = u.id
+    WHERE t.buyer_id = '${req.user.id}'
+    ORDER BY t.created_at DESC
+  `;
+  const purchases = runSql(query);
+  res.json(purchases || []);
+});
+
+// Seller sales endpoint
+app.get('/api/dashboard/sales', authenticateToken, (req: any, res) => {
+  const query = `
+    SELECT t.*, c.make, c.model, c.year, c.image_url, u.name as buyer_name
+    FROM transactions t
+    JOIN cars c ON t.car_id = c.id
+    JOIN users u ON t.buyer_id = u.id
+    WHERE t.seller_id = '${req.user.id}'
+    ORDER BY t.created_at DESC
+  `;
+  const sales = runSql(query);
+  res.json(sales || []);
+});
+
+// Seller earnings summary
+app.get('/api/dashboard/earnings', authenticateToken, (req: any, res) => {
+  if (req.user.role !== 'seller') {
+    return res.status(403).json({ error: 'Only sellers can view earnings' });
+  }
+
+  const totalSold = runSql(`
+    SELECT COALESCE(SUM(total_price), 0) as total_earnings, COUNT(*) as total_sales
+    FROM transactions
+    WHERE seller_id = '${req.user.id}' AND status = 'completed'
+  `);
+
+  const pendingEarnings = runSql(`
+    SELECT COALESCE(SUM(remaining_balance), 0) as pending_amount, COUNT(*) as active_plans
+    FROM installment_plans
+    WHERE seller_id = '${req.user.id}' AND status = 'active'
+  `);
+
+  res.json({
+    total_earnings: totalSold?.[0]?.total_earnings || 0,
+    total_sales: totalSold?.[0]?.total_sales || 0,
+    pending_earnings: pendingEarnings?.[0]?.pending_amount || 0,
+    active_installment_plans: pendingEarnings?.[0]?.active_plans || 0
+  });
+});
+
+// Buyer payment history
+app.get('/api/dashboard/payment-history', authenticateToken, (req: any, res) => {
+  const query = `
+    SELECT p.*, ip.monthly_payment, ip.total_amount, ip.remaining_balance,
+           c.make, c.model, c.year, c.image_url
+    FROM payments p
+    JOIN installment_plans ip ON p.plan_id = ip.id
+    JOIN cars c ON ip.car_id = c.id
+    WHERE ip.buyer_id = '${req.user.id}'
+    ORDER BY p.payment_date DESC
+  `;
+  const payments = runSql(query);
+  res.json(payments || []);
+});
+
+// Buyer next payment due
+app.get('/api/dashboard/next-payment', authenticateToken, (req: any, res) => {
+  const query = `
+    SELECT ip.*, c.make, c.model, c.year, c.image_url
+    FROM installment_plans ip
+    JOIN cars c ON ip.car_id = c.id
+    WHERE ip.buyer_id = '${req.user.id}' AND ip.status = 'active' AND ip.remaining_balance > 0
+    ORDER BY ip.created_at ASC
+    LIMIT 1
+  `;
+  const nextPayment = runSql(query);
+
+  if (nextPayment && nextPayment.length > 0) {
+    const plan = nextPayment[0];
+    const paymentCount = runSql(`SELECT COUNT(*) as count FROM payments WHERE plan_id = '${plan.id}' AND status = 'completed'`);
+    const paymentsMade = paymentCount?.[0]?.count || 0;
+    res.json({
+      ...plan,
+      payments_made: paymentsMade,
+      next_installment_number: paymentsMade + 1,
+      total_installments: plan.duration_months
+    });
+  } else {
+    res.json(null);
+  }
+});
+
+// Unified transaction history for current user
+app.get('/api/dashboard/transactions', authenticateToken, (req: any, res) => {
+  const query = `
+    SELECT t.*,
+           c.make, c.model, c.year, c.image_url,
+           buyer.name as buyer_name,
+           seller.name as seller_name
+    FROM transactions t
+    JOIN cars c ON t.car_id = c.id
+    JOIN users buyer ON t.buyer_id = buyer.id
+    JOIN users seller ON t.seller_id = seller.id
+    WHERE t.buyer_id = '${req.user.id}' OR t.seller_id = '${req.user.id}'
+    ORDER BY t.created_at DESC
+  `;
+  const transactions = runSql(query);
+  res.json(transactions || []);
+});
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on http://0.0.0.0:${PORT}`);
 });

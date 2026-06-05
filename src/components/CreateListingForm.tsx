@@ -23,8 +23,8 @@ export default function CreateListingForm({ onSuccess }: CreateListingFormProps)
     setLoading(true)
     setError('')
 
-    const token = localStorage.getItem('token')
-    if (!token) {
+    const authToken = localStorage.getItem('rideup_token')
+    if (!authToken) {
       setError('You must be logged in')
       setLoading(false)
       return
@@ -35,7 +35,7 @@ export default function CreateListingForm({ onSuccess }: CreateListingFormProps)
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          'Authorization': `Bearer ${authToken}`
         },
         body: JSON.stringify(formData)
       })

@@ -120,6 +120,37 @@ export default function ListingDetail() {
     }
   }
 
+  const handlePayCash = async () => {
+    if (!user) return alert('Please login to purchase')
+    if (!confirm('Are you sure you want to purchase this vehicle for cash?')) return
+    
+    setSubmitting(true)
+    try {
+      const res = await fetch('http://localhost:3001/api/transactions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('rideup_token')}`
+        },
+        body: JSON.stringify({
+          car_id: id,
+          payment_method: 'outright'
+        })
+      })
+      const data = await res.json()
+      if (res.ok) {
+        alert('Purchase successful! You can now coordinate pickup with the seller.')
+        window.location.reload()
+      } else {
+        alert(data.error)
+      }
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   if (loading) {
     return <div className="container mx-auto px-4 py-8 text-center text-xl">Loading car details...</div>
   }
@@ -185,10 +216,11 @@ export default function ListingDetail() {
           
           <div className="space-y-4">
             <button 
-              onClick={() => alert('Contacting seller...')}
-              className="w-full py-4 bg-gray-800 text-white rounded-xl font-bold text-lg hover:bg-gray-900 transition"
+              onClick={handlePayCash}
+              disabled={submitting}
+              className="w-full py-4 bg-gray-800 text-white rounded-xl font-bold text-lg hover:bg-gray-900 transition disabled:bg-gray-400"
             >
-              Pay Cash / Contact Seller
+              {submitting ? 'Processing...' : 'Pay Cash / Purchase Outright'}
             </button>
             
             {car.flexible_payment && car.status === 'available' && (
