@@ -44,6 +44,7 @@ export const seed = async () => {
   console.log('Seeding completed.')
 }
 
-if (import.meta.url.endsWith(process.argv[1])) {
-  seed()
-}
+seed().catch(err => {
+  console.error('Seed failed:', err)
+  process.exit(1)
+})
